@@ -1,0 +1,88 @@
+name: dmarc-check
+description: Check SPF, DMARC, DKIM, MX, MTA-STS and TLS-RPT for your domains with local DNS lookups.
+author: Lookproof
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  domains:
+    description: Comma-separated list of domains to check.
+    required: true
+  dkim-selectors:
+    description: Comma-separated DKIM selectors to check on every domain (e.g. "google,s1"). DKIM is skipped when empty.
+    required: false
+    default: ""
+  fail-on:
+    description: >-
+      When the step fails. "error" (default), "warn", "info", "none", and/or a comma list
+      of finding ids, e.g. "error,dmarc-policy-none".
+    required: false
+    default: error
+  resolver:
+    description: Comma-separated DNS server IPs to use instead of the runner's resolver.
+    required: false
+    default: ""
+  create-issue:
+    description: >-
+      "true" to open or update one issue while the check fails and close it when it passes.
+      Meant for scheduled runs. Needs "issues: write".
+    required: false
+    default: "false"
+  issue-title:
+    description: Title of the tracking issue. Issues are matched on this exact title.
+    required: false
+    default: "dmarc-check: mail authentication problems"
+  github-token:
+    description: Token used for create-issue.
+    required: false
+    default: ${{ github.token }}
+  python-version:
+    description: Python version used to run the check. It is not added to PATH for later steps.
+    required: false
+    default: "3.12"
+
+outputs:
+  json:
+    description: All findings as JSON.
+    value: ${{ steps.check.outputs.json }}
+  exit-code:
+    description: 0 when nothing matches fail-on, 1 when something does, 2 on invalid input.
+    value: ${{ steps.check.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      id: python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+        update-environment: false
+
+    - name: Install dmarc-check
+      id: install
+      shell: bash
+      env:
+        PYTHON: ${{ steps.python.outputs.python-path }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        venv="$RUNNER_TEMP/dmarc-check-venv"
+        "$PYTHON" -m venv "$venv"
+        if [ -x "$venv/bin/python" ]; then py="$venv/bin/python"; else py="$venv/Scripts/python.exe"; fi
+        "$py" -m pip install --quiet --disable-pip-version-check "$ACTION_PATH"
+        echo "python=$py" >> "$GITHUB_OUTPUT"
+
+    - name: Run dmarc-check
+      id: check
+      shell: bash
+      env:
+        PYTHON: ${{ steps.install.outputs.python }}
+        DMARC_CHECK_DOMAINS: ${{ inputs.domains }}
+        DMARC_CHECK_DKIM_SELECTORS: ${{ inputs.dkim-selectors }}
+        DMARC_CHECK_FAIL_ON: ${{ inputs.fail-on }}
+        DMARC_CHECK_RESOLVER: ${{ inputs.resolver }}
+        DMARC_CHECK_CREATE_ISSUE: ${{ inputs.create-issue }}
+        DMARC_CHECK_ISSUE_TITLE: ${{ inputs.issue-title }}
+        DMARC_CHECK_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: '"$PYTHON" -m dmarc_check.action'

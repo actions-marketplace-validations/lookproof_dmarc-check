@@ -1,0 +1,77 @@
+name: Smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action:
+    name: action on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # Only for the verification step below; the action brings its own Python.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run the action from this checkout
+        id: check
+        uses: ./
+        with:
+          domains: lookproof.dev, senderward.com
+          # Smoke test: we check that the tool runs, not the domains' configuration.
+          fail-on: none
+
+      - name: Verify outputs
+        shell: bash
+        env:
+          REPORT: ${{ steps.check.outputs.json }}
+          EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+        run: |
+          test "$EXIT_CODE" = "0"
+          python - <<'PY'
+          import json, os, sys
+          report = json.loads(os.environ["REPORT"])
+          domains = [d["domain"] for d in report["domains"]]
+          assert domains == ["lookproof.dev", "senderward.com"], domains
+          broken = [
+              f for d in report["domains"] for f in d["findings"]
+              if f["id"] in ("check-internal-error", "dns-domain-not-found")
+          ]
+          if broken:
+              sys.exit(f"tool problem: {broken}")
+          for d in report["domains"]:
+              print(d["domain"], [f["id"] for f in d["findings"]])
+          PY
+
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install .
+      - name: Text output
+        run: dmarc-check lookproof.dev senderward.com --fail-on none
+      - name: JSON output and exit code
+        run: |
+          set +e
+          dmarc-check lookproof.dev --dkim-selector does-not-exist-dmarc-check --json > report.json
+          code=$?
+          set -e
+          test "$code" = "1"
+          python -c "import json; r = json.load(open('report.json')); assert r['failed'] and r['exit_code'] == 1"
